@@ -48,12 +48,27 @@ with st.sidebar:
 # --- Helper Functions ---
 
 def extract_text_from_pdf(uploaded_file):
-    """Extracts text from a PDF file using pypdf."""
+    """Extracts text from a PDF file using pypdf with safety checks."""
     try:
         reader = PdfReader(uploaded_file)
         text = ""
-        for page in reader.pages:
-            text += page.extract_text() or ""
+        # Check if PDF is encrypted
+        if reader.is_encrypted:
+            st.error("⚠️ This PDF is password protected. Please upload an unlocked PDF.")
+            return None
+            
+        # Iterate over pages with a progress bar in the UI
+        num_pages = len(reader.pages)
+        my_bar = st.progress(0, text="Reading PDF pages...")
+        
+        for i, page in enumerate(reader.pages):
+            content = page.extract_text()
+            if content:
+                text += content
+            # Update progress bar
+            my_bar.progress((i + 1) / num_pages)
+            
+        my_bar.empty() # Remove bar when done
         return text
     except Exception as e:
         st.error(f"Error reading PDF: {e}")
