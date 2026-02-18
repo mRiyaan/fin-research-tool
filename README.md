@@ -1,6 +1,6 @@
 # Financial Research Tool
 
-A Streamlit application that uses Google's Gemini 1.5 Flash model to analyze earnings call transcripts (PDF) and provide a strategic summary.
+A Streamlit application that uses Google's Gemini 2.5 Flash model to analyze earnings call transcripts (PDF) and provide a strategic summary.
 
 ## Setup
 
