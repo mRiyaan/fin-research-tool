@@ -1,12 +1,14 @@
 import streamlit as st
 import os
 import google.generativeai as genai
-from pypdf import PdfReader
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from dotenv import load_dotenv
 import json
 import re
+import tempfile
+import time
 
-
+# Load environment variables
 load_dotenv()
 
 # --- Configuration ---
@@ -29,78 +31,77 @@ with st.sidebar:
         st.warning("⚠️ Please enter a Google API Key to proceed.")
         st.caption("Don't have one? Get it [here](https://aistudio.google.com/app/apikey).")
 
-    # --- Debug Option ---
     st.divider()
-    if st.checkbox("Show Available Models (Debug)"):
-        if api_key:
-            try:
-                genai.configure(api_key=api_key)
-                models = genai.list_models()
-                st.write("Available Gemini Models:")
-                for m in models:
-                    if 'generateContent' in m.supported_generation_methods:
-                        st.code(m.name)
-            except Exception as e:
-                st.error(f"Error fetching models: {e}")
-        else:
-            st.warning("Enter API Key first.")
+    st.markdown("### 🛠️ System Status")
+    st.info("Mode: **Professional Analyst**")
+    st.caption("Model: `gemini-2.5-flash`")
+    st.caption("Safety: `Disabled`")
+    st.caption("Input: `Native PDF Upload`")
 
 # --- Helper Functions ---
 
-def extract_text_from_pdf(uploaded_file):
-    """Extracts text from a PDF file using pypdf with safety checks."""
-    try:
-        reader = PdfReader(uploaded_file)
-        text = ""
-        # Check if PDF is encrypted
-        if reader.is_encrypted:
-            st.error("⚠️ This PDF is password protected. Please upload an unlocked PDF.")
-            return None
-            
-        # Iterate over pages with a progress bar in the UI
-        num_pages = len(reader.pages)
-        my_bar = st.progress(0, text="Reading PDF pages...")
-        
-        for i, page in enumerate(reader.pages):
-            content = page.extract_text()
-            if content:
-                text += content
-            # Update progress bar
-            my_bar.progress((i + 1) / num_pages)
-            
-        my_bar.empty() # Remove bar when done
-        return text
-    except Exception as e:
-        st.error(f"Error reading PDF: {e}")
-        return None
-
-def analyze_transcript(text, api_key):
-    """Analyzes the transcript using Gemini 2.5 Flash."""
+def analyze_transcript_multimodal(file_path, api_key):
+    """Analyzes the PDF directly using Gemini 2.5 Flash Multimodal capabilities with Professional Persona."""
     try:
         genai.configure(api_key=api_key)
-        # using gemini-2.5-flash 
         model = genai.GenerativeModel('gemini-2.5-flash')
-
-        # Using f-string for cleaner variable injection
-        prompt = f"""
-        You are an expert financial analyst. Your task is to analyze the following Earnings Call Transcript and provide a structured strategic summary.
         
-        Strictly output the result as a valid JSON object with the following keys:
-        - "sentiment": String (one of: "Bullish", "Neutral", "Bearish")
-        - "confidence_score": Integer (1-100)
-        - "summary": String (A concise 2-sentence executive summary)
-        - "positives": List of strings (Top 3 tailwinds/strengths)
-        - "negatives": List of strings (Top 3 headwinds/risks)
-        - "outlook": String (Management's guidance)
+        # Safety Settings
+        # Safety settings to prevent blocking of financial risks
+        safety_settings = [
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"}
+        ]
 
-        Do not include markdown formatting (like ```json). Just return the raw JSON string.
+        # 1. Upload file to Gemini
+        gemini_file = genai.upload_file(file_path, mime_type="application/pdf")
+        
+        # 2. Wait for processing (usually instant for PDFs)
+        while gemini_file.state.name == "PROCESSING":
+            time.sleep(1)
+            gemini_file = genai.get_file(gemini_file.name)
 
-        Transcript:
-        {text} 
+        if gemini_file.state.name == "FAILED":
+             raise ValueError("Gemini failed to process the PDF file.")
+
+        # 3. Prompt
+        prompt = """
+        You are a Senior Equity Research Analyst. Perform a deep-dive analysis of this scanned earnings call.
+        
+        STEP 1: OCR the document and identify the Key Financial Metrics (Revenue, EBITDA, Net Profit, Order Book/Backlog).
+        STEP 2: Analyze the 'Tone' of the Management vs. the 'Tone' of the Analysts in the Q&A.
+        STEP 3: Extract any specific 'Guidance' or 'Outlook' numbers provided for the next fiscal year.
+        
+        Provide the final analysis ONLY as a valid JSON object:
+        {
+          "sentiment": "Strong Bullish / Bullish / Neutral / Bearish / Strong Bearish",
+          "confidence_score": 1-100,
+          "summary": "A high-level 3-sentence summary of the business trajectory.",
+          "positives": ["At least 3 specific tailwinds with data points if available"],
+          "negatives": ["At least 3 specific risks or headwinds mentioned"],
+          "outlook": "Detail the management's numerical or strategic guidance for the future",
+          "key_metrics": {
+              "revenue": "Value if found",
+              "ebitda": "Value if found",
+              "net_profit": "Value if found",
+              "order_book": "Value if found",
+              "margin_guidance": "Percentage if found"
+          }
+        }
+        Do not use markdown. Return raw JSON.
         """
         
-        response = model.generate_content(prompt)
+        # 4. Generate Content (Prompt + File)
+        response = model.generate_content([prompt, gemini_file], safety_settings=safety_settings)
         
+        # 5. Cleanup (Delete file from Gemini)
+        try:
+            gemini_file.delete()
+        except:
+            pass
+
         if response.text:
             cleaned_text = re.sub(r'```json\s*|\s*```', '', response.text).strip()
             return json.loads(cleaned_text)
@@ -108,9 +109,8 @@ def analyze_transcript(text, api_key):
             return None
 
     except Exception as e:
-        # If 2.5 fails, this error will show up in the UI
-        st.error(f"Error during analysis: {e}")
-        return None
+        # Pass the error up
+        raise e
 
 # --- Main UI ---
 st.title("💰 Earnings Call AI Analyst")
@@ -123,53 +123,92 @@ if uploaded_file is not None:
         if not api_key:
             st.error("Please provide an API Key to proceed.")
         else:
-            with st.spinner("Extracting text and analyzing with Gemini... This may take a moment."):
-                # 1. Extract Text
-                transcript_text = extract_text_from_pdf(uploaded_file)
+            # --- Checkpoint System ---
+            status_container = st.status("🚀 Processing...", expanded=True)
+            progress_bar = status_container.progress(0, text="Initializing...")
+            temp_path = None
+            
+            try:
+                # Checkpoint 1: Uploading
+                status_container.write("📤 Uploading PDF to Gemini (Vision Mode)...")
+                progress_bar.progress(10, text="Uploading PDF...")
                 
-                if transcript_text:
-                    # 2. Analyze with LLM
-                    analysis_result = analyze_transcript(transcript_text, api_key)
+                # Create a temp file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    temp_path = tmp.name
+
+                if temp_path:
+                    progress_bar.progress(30, text="PDF Uploaded. Waiting for processing...")
+                    status_container.write("✅ Upload success. Model is 'reading' the file...")
                     
-                    if analysis_result:
-                        # 3. Display Results
-                        st.success("Analysis Complete!")
-                        st.divider()
+                    # Checkpoint 2: AI Analysis
+                    progress_bar.progress(50, text="Analyzing financial data with Gemini 2.5 Flash...")
+                    status_container.write("🧠 Analyzing with **Gemini 2.5 Flash**...")
+                    
+                    result = analyze_transcript_multimodal(temp_path, api_key) # Using 'result' to match new UI logic
+                    
+                    if result:
+                        progress_bar.progress(100, text="Analysis Complete!")
+                        status_container.update(label="Analysis Complete!", state="complete", expanded=False)
+                        st.balloons()
                         
-                        # Sentiment & Score
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Overall Sentiment", analysis_result.get("sentiment", "N/A"))
-                        with col2:
-                            st.metric("Confidence Score", f"{analysis_result.get('confidence_score', 0)}/100")
-                        
-                        st.subheader("Executive Summary")
-                        st.write(analysis_result.get("summary", "No summary available."))
-                        
-                        st.divider()
-                        
-                        # Positives & Negatives
-                        p_col, n_col = st.columns(2)
-                        
-                        with p_col:
-                            st.subheader("✅ Positives")
-                            for item in analysis_result.get("positives", []):
-                                st.write(f"- {item}")
-                                
-                        with n_col:
-                            st.subheader("🔻 Negatives")
-                            for item in analysis_result.get("negatives", []):
-                                st.write(f"- {item}")
-                        
+                        # --- Professional UI ---
                         st.divider()
 
-                        # Outlook
-                        st.subheader("🔮 Management Outlook")
-                        st.info(analysis_result.get("outlook", "No specific outlook provided."))
+                        # 1. Top Level Metrics
+                        col1, col2, col3 = st.columns([1, 1, 2])
+                        col1.metric("Market Sentiment", result.get("sentiment", "N/A"))
+                        col2.metric("AI Confidence", f"{result.get('confidence_score', 0)}%")
                         
-                        # Raw Data Expander (Optional, good for debugging/transparency)
-                        with st.expander("View Full Extracted JSON Analysis"):
-                            st.json(analysis_result)
+                        # Extract order book/metrics
+                        metrics = result.get("key_metrics", {})
+                        order_book = metrics.get("order_book", "N/A")
+                        
+                        with col3:
+                            st.markdown("### Order Book")
+                            st.markdown(f"<h1 style='font-size: 3rem; color: #4CAF50;'>{order_book}</h1>", unsafe_allow_html=True)
+
+                        # 2. Executive Summary
+                        st.subheader("📋 Strategic Executive Summary")
+                        st.info(result.get("summary", "No summary available."))
+
+                        # 3. Pros and Cons
+                        p_col, n_col = st.columns(2)
+                        with p_col:
+                            st.subheader("✅ Key Tailwinds")
+                            for p in result.get("positives", []):
+                                st.success(f"{p}")
+                                
+                        with n_col:
+                            st.subheader("⚠️ Critical Risks")
+                            for n in result.get("negatives", []):
+                                st.error(f"{n}")
+
+                        st.divider()
+
+                        # 4. Management Guidance
+                        st.subheader("🔮 Forward-Looking Guidance")
+                        st.warning(result.get("outlook", "No specific guidance provided."))
+
+                        # 5. Key Metrics Table (Extra Professional Touch)
+                        st.subheader("📊 Key Financial Metrics")
+                        st.json(metrics)
+                        
+                        # Raw Data Expander
+                        with st.expander("View Full Raw Analysis"):
+                            st.json(result)
+                    else:
+                        status_container.update(label="Analysis Failed", state="error")
+                else:
+                    status_container.update(label="File Error", state="error")
+            except Exception as e:
+                status_container.update(label="Error Occurred", state="error")
+                st.error(f"An error occurred: {e}")
+            finally:
+                # Local cleanup
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
 
     
 else:
