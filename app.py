@@ -60,40 +60,40 @@ def extract_text_from_pdf(uploaded_file):
         return None
 
 def analyze_transcript(text, api_key):
-    """Analyzes the transcript using Gemini 1.5 Flash."""
+    """Analyzes the transcript using Gemini 2.5 Flash."""
     try:
         genai.configure(api_key=api_key)
+        # using gemini-2.5-flash 
         model = genai.GenerativeModel('gemini-2.5-flash')
 
-        prompt = """
+        # Using f-string for cleaner variable injection
+        prompt = f"""
         You are an expert financial analyst. Your task is to analyze the following Earnings Call Transcript and provide a structured strategic summary.
         
-        Strictly output the result as a valid JSON object with the following keys and data types:
+        Strictly output the result as a valid JSON object with the following keys:
         - "sentiment": String (one of: "Bullish", "Neutral", "Bearish")
-        - "confidence_score": Integer (1-100, representing your confidence in the sentiment analysis)
-        - "summary": String (A concise 2-sentence executive summary of the call)
-        - "positives": List of strings (Top 3 tailwinds, strengths, or positive highlights)
-        - "negatives": List of strings (Top 3 headwinds, risks, or negative highlights)
-        - "outlook": String (Management's guidance on revenue, growth, or future expectations)
+        - "confidence_score": Integer (1-100)
+        - "summary": String (A concise 2-sentence executive summary)
+        - "positives": List of strings (Top 3 tailwinds/strengths)
+        - "negatives": List of strings (Top 3 headwinds/risks)
+        - "outlook": String (Management's guidance)
 
-        If you cannot determine a field, provide a reasonable estimate or "N/A".
-        Do not include markdown formatting (like ```json) in your response, just the raw JSON string.
+        Do not include markdown formatting (like ```json). Just return the raw JSON string.
 
         Transcript:
-        {text}
+        {text} 
         """
         
-        
-        response = model.generate_content(prompt.format(text=text))
+        response = model.generate_content(prompt)
         
         if response.text:
-            
             cleaned_text = re.sub(r'```json\s*|\s*```', '', response.text).strip()
             return json.loads(cleaned_text)
         else:
             return None
 
     except Exception as e:
+        # If 2.5 fails, this error will show up in the UI
         st.error(f"Error during analysis: {e}")
         return None
 
