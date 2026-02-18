@@ -40,8 +40,8 @@ with st.sidebar:
 
 # --- Helper Functions ---
 
-def analyze_transcript_multimodal(file_path, api_key):
-    """Analyzes the PDF directly using Gemini 2.5 Flash Multimodal capabilities with Professional Persona."""
+def analyze_transcript_multimodal(file_path, api_key, progress_bar=None):
+    """Analyzes the PDF directly using Gemini 2.5 Flash Multimodal capabilities with streaming progress."""
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
@@ -66,7 +66,7 @@ def analyze_transcript_multimodal(file_path, api_key):
         if gemini_file.state.name == "FAILED":
              raise ValueError("Gemini failed to process the PDF file.")
 
-        # 3. Prompt
+        # 3. Enhanced Prompt
         prompt = """
         You are a Senior Equity Research Analyst. Perform a deep-dive analysis of this scanned earnings call.
         
@@ -93,8 +93,27 @@ def analyze_transcript_multimodal(file_path, api_key):
         Do not use markdown. Return raw JSON.
         """
         
-        # 4. Generate Content (Prompt + File)
-        response = model.generate_content([prompt, gemini_file], safety_settings=safety_settings)
+        # 4. Generate Content (Prompt + File) - STREAMING for Progress
+        response = model.generate_content(
+            [prompt, gemini_file], 
+            safety_settings=safety_settings,
+            stream=True
+        )
+        
+        full_text = ""
+        current_progress = 25
+        
+        for chunk in response:
+            if chunk.text:
+                full_text += chunk.text
+            
+            # Increment progress bar slightly for each chunk, capped at 90%
+            if progress_bar:
+                if current_progress < 90:
+                    current_progress += 2
+                    progress_bar.progress(current_progress, text="Generative AI is analyzing...")
+                else:
+                    progress_bar.progress(90, text="Finalizing analysis...")
         
         # 5. Cleanup (Delete file from Gemini)
         try:
@@ -102,8 +121,8 @@ def analyze_transcript_multimodal(file_path, api_key):
         except:
             pass
 
-        if response.text:
-            cleaned_text = re.sub(r'```json\s*|\s*```', '', response.text).strip()
+        if full_text:
+            cleaned_text = re.sub(r'```json\s*|\s*```', '', full_text).strip()
             return json.loads(cleaned_text)
         else:
             return None
@@ -139,14 +158,14 @@ if uploaded_file is not None:
                     temp_path = tmp.name
 
                 if temp_path:
-                    progress_bar.progress(30, text="PDF Uploaded. Waiting for processing...")
+                    progress_bar.progress(25, text="PDF Uploaded. Connecting to Gemini...")
                     status_container.write("✅ Upload success. Model is 'reading' the file...")
                     
                     # Checkpoint 2: AI Analysis
-                    progress_bar.progress(50, text="Analyzing financial data with Gemini 2.5 Flash...")
                     status_container.write("🧠 Analyzing with **Gemini 2.5 Flash**...")
                     
-                    result = analyze_transcript_multimodal(temp_path, api_key) # Using 'result' to match new UI logic
+                    # Pass progress bar to function for streaming update
+                    result = analyze_transcript_multimodal(temp_path, api_key, progress_bar)
                     
                     if result:
                         progress_bar.progress(100, text="Analysis Complete!")
